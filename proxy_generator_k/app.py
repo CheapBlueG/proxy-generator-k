@@ -5,12 +5,11 @@ import requests
 import os
 import random
 import string
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 app = Flask(__name__)
 
 # App version
-APP_VERSION = '1.0.1'
+APP_VERSION = '1.0.2'
 
 # Environment Variables (set in Render):
 # IPAPI_KEY - ip-api.com API key (for location/distance)
@@ -550,7 +549,7 @@ HTML_TEMPLATE = '''
 <body>
     <div class="container">
         <h1>🌐 Proxy Generator <span class="badge">K</span></h1>
-        <p class="subtitle">Distance-only checking • Fast parallel testing</p>
+        <p class="subtitle">Distance-only checking • SOAX proxies</p>
         
         <div class="card">
             <div id="configStatus" class="config-status">Checking configuration...</div>
@@ -594,7 +593,7 @@ HTML_TEMPLATE = '''
     </div>
     
     <script>
-        const CLIENT_APP_VERSION = '1.0.1';
+        const CLIENT_APP_VERSION = '1.0.2';
         let configReady = false;
         
         // Load saved Mapbox key
@@ -688,8 +687,8 @@ HTML_TEMPLATE = '''
                 <div class="card">
                     <div class="loading">
                         <div class="spinner"></div>
-                        <p>Testing proxies in parallel...</p>
-                        <p style="font-size: 12px; color: #666; margin-top: 10px;">Checking distance only (no detection)</p>
+                        <p>Testing proxies...</p>
+                        <p style="font-size: 12px; color: #666; margin-top: 10px;">Checking distance only</p>
                     </div>
                 </div>
             `;
@@ -849,20 +848,11 @@ def generate():
     city = location.get('city', '')
     region = location.get('region', '')
     
-    # Helper function to test a single proxy
-    def test_single_proxy(proxy):
-        result = test_proxy(
-            proxy['full_string'],
-            location['lat'],
-            location['lon'],
-            config['ipapi_key'],
-            max_distance
-        )
-        return proxy, result
+    last_fail_reasons = []
+    last_result = None
     
-    # Generate all proxies upfront
-    all_proxies = []
-    for i in range(max_attempts):
+    # Test proxies sequentially (simpler, works on Render free tier)
+    for attempt in range(max_attempts):
         proxy = build_soax_proxy(
             package_id=config['soax_package_id'],
             password=config['soax_password'],
@@ -871,58 +861,47 @@ def generate():
             city=city,
             session_length=3600
         )
-        all_proxies.append(proxy)
-    
-    # Test proxies in parallel (5 at a time)
-    batch_size = 5
-    last_fail_reasons = []
-    last_result = None
-    total_tested = 0
-    
-    for batch_start in range(0, len(all_proxies), batch_size):
-        batch = all_proxies[batch_start:batch_start + batch_size]
         
-        with ThreadPoolExecutor(max_workers=batch_size) as executor:
-            futures = {executor.submit(test_single_proxy, proxy): proxy for proxy in batch}
-            
-            for future in as_completed(futures):
-                total_tested += 1
-                try:
-                    proxy, result = future.result()
-                    last_result = result
-                    
-                    if not result['success']:
-                        last_fail_reasons = [result.get('error', 'Connection failed')]
-                        continue
-                    
-                    last_fail_reasons = result.get('fail_reasons', [])
-                    
-                    if result['passed']:
-                        # FOUND A GOOD PROXY!
-                        return jsonify({
-                            'success': True,
-                            'full_string': proxy['full_string'],
-                            'server': proxy['server'],
-                            'port': proxy['port'],
-                            'username': proxy['username'],
-                            'password': proxy['password'],
-                            'session_id': proxy['session_id'],
-                            'ip': result['ip'],
-                            'city': result['city'],
-                            'region': result['region'],
-                            'country': result['country'],
-                            'distance': result['distance'],
-                            'isp': result['isp'],
-                            'attempts_used': total_tested,
-                            'target_address': target_address
-                        })
-                except Exception as e:
-                    last_fail_reasons = [f"Error: {str(e)}"]
+        result = test_proxy(
+            proxy['full_string'],
+            location['lat'],
+            location['lon'],
+            config['ipapi_key'],
+            max_distance
+        )
+        
+        last_result = result
+        
+        if not result['success']:
+            last_fail_reasons = [result.get('error', 'Connection failed')]
+            continue
+        
+        last_fail_reasons = result.get('fail_reasons', [])
+        
+        if result['passed']:
+            # FOUND A GOOD PROXY!
+            return jsonify({
+                'success': True,
+                'full_string': proxy['full_string'],
+                'server': proxy['server'],
+                'port': proxy['port'],
+                'username': proxy['username'],
+                'password': proxy['password'],
+                'session_id': proxy['session_id'],
+                'ip': result['ip'],
+                'city': result['city'],
+                'region': result['region'],
+                'country': result['country'],
+                'distance': result['distance'],
+                'isp': result['isp'],
+                'attempts_used': attempt + 1,
+                'target_address': target_address
+            })
     
     # No proxy found
     return jsonify({
-        'error': f'Could not find a proxy within {max_distance} miles after {total_tested} attempts.',
-        'attempts': total_tested,
+        'error': f'Could not find a proxy within {max_distance} miles after {max_attempts} attempts.',
+        'attempts': max_attempts,
         'last_fail_reasons': last_fail_reasons,
         'last_result': {
             'ip': last_result.get('ip') if last_result else None,
