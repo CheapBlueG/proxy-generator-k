@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 app = Flask(__name__)
 
 # App version
-APP_VERSION = '1.0.0'
+APP_VERSION = '1.0.1'
 
 # Environment Variables (set in Render):
 # IPAPI_KEY - ip-api.com API key (for location/distance)
@@ -594,7 +594,7 @@ HTML_TEMPLATE = '''
     </div>
     
     <script>
-        const CLIENT_APP_VERSION = '1.0.0';
+        const CLIENT_APP_VERSION = '1.0.1';
         let configReady = false;
         
         // Load saved Mapbox key
@@ -931,6 +931,55 @@ def generate():
             'distance': last_result.get('distance') if last_result else None,
         } if last_result else None
     })
+
+
+@app.route('/debug-env', methods=['GET'])
+def debug_env():
+    """Debug endpoint to check environment variables"""
+    config = get_env_config()
+    return jsonify({
+        'has_ipapi': bool(config['ipapi_key']),
+        'ipapi_key_preview': config['ipapi_key'][:6] + '...' if config['ipapi_key'] else 'NOT SET',
+        'has_soax_package': bool(config['soax_package_id']),
+        'soax_package_id': config['soax_package_id'] or 'NOT SET',
+        'has_soax_password': bool(config['soax_password']),
+        'soax_password_preview': config['soax_password'][:4] + '...' if config['soax_password'] else 'NOT SET',
+    })
+
+
+@app.route('/test-proxy', methods=['GET'])
+def test_proxy_endpoint():
+    """Quick test - try to connect through SOAX and get IP"""
+    config = get_env_config()
+    
+    if not config['soax_package_id'] or not config['soax_password']:
+        return jsonify({'error': 'SOAX not configured'})
+    
+    # Build a simple proxy
+    proxy = build_soax_proxy(
+        package_id=config['soax_package_id'],
+        password=config['soax_password'],
+        country='us',
+        session_length=3600
+    )
+    
+    proxy_url = f"http://{proxy['username']}:{proxy['password']}@{proxy['server']}:{proxy['port']}"
+    proxies = {"http": proxy_url, "https": proxy_url}
+    
+    try:
+        response = requests.get("https://api.ipify.org?format=json", proxies=proxies, timeout=10)
+        ip = response.json()['ip']
+        return jsonify({
+            'success': True,
+            'ip': ip,
+            'proxy_used': proxy['full_string']
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'proxy_tried': proxy['full_string']
+        })
 
 
 if __name__ == '__main__':
